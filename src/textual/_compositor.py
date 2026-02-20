@@ -38,6 +38,13 @@ from textual.map_geometry import MapGeometry
 from textual.strip import Strip, StripRenderable
 from textual.widget import Widget
 
+# Sentinel strip used to mark "merged" chop positions.
+# When a higher-priority widget wins both sides of a cut, we avoid dividing its
+# strip there (which would split double-width CJK characters). The leader chop
+# gets the wide un-split strip; follower chops get this sentinel so that
+# lower-priority widgets cannot fill them (which would corrupt the display).
+_MERGED_STRIP: Strip = Strip([], 0)
+
 if TYPE_CHECKING:
     from typing_extensions import TypeAlias
 
@@ -189,17 +196,21 @@ class ChopsUpdate(CompositorUpdate):
         move_to = Control.move_to
         new_line = Segment.line()
         chops = self.chops
-        chop_ends = self.chop_ends
         last_y = self.spans[-1][0]
 
         _cell_len = cell_len
         for y, x1, x2 in self.spans:
             line = chops[y]
-            ends = chop_ends[y]
-            for end, (x, strip) in zip(ends, line.items()):
+            for x, strip in line.items():
                 # TODO: crop to x extents
-                if strip is None:
+                if strip is None or not strip:
+                    # Skip unfilled chops (None) and _MERGED_STRIP sentinels.
                     continue
+
+                # Use actual strip width rather than the nominal cut-based end so
+                # that merged leader strips (wider than their nominal chop bucket)
+                # are rendered correctly for double-width character preservation.
+                end = x + strip.cell_length
 
                 if x > x2 or end <= x1:
                     continue
@@ -246,15 +257,19 @@ class ChopsUpdate(CompositorUpdate):
 
         move_to = Control.move_to
         chops = self.chops
-        chop_ends = self.chop_ends
         last_y = self.spans[-1][0]
 
         for y, x1, x2 in self.spans:
             line = chops[y]
-            ends = chop_ends[y]
-            for end, (x, strip) in zip(ends, line.items()):
-                if strip is None:
+            for x, strip in line.items():
+                if strip is None or not strip:
+                    # Skip unfilled chops (None) and _MERGED_STRIP sentinels.
                     continue
+
+                # Use actual strip width rather than the nominal cut-based end so
+                # that merged leader strips (wider than their nominal chop bucket)
+                # are rendered correctly for double-width character preservation.
+                end = x + strip.cell_length
 
                 if x > x2 or end <= x1:
                     continue
@@ -1230,13 +1245,40 @@ class Compositor:
 
                 chops_line = chops[y]
                 final_cuts = [cut for cut in cuts[y] if (last_cut >= cut >= first_cut)]
-                cut_strips = strip.divide([cut - render_x for cut in final_cuts[1:]])
 
-                # Since we are painting front to back, the first segments for a cut "wins"
+                # Compute effective cuts: skip "internal" cuts where both adjacent
+                # chops are currently unfilled (None).  When the same widget wins
+                # both sides of a cut the division is unnecessary, and – crucially –
+                # it can split a double-width (CJK) character into two spaces.
+                # A cut is a *real* boundary only when the chop on at least one side
+                # is already claimed by a higher-priority widget (not None).
+                effective_cuts = [final_cuts[0]]
+                for _i in range(1, len(final_cuts) - 1):
+                    if (
+                        chops_line.get(final_cuts[_i - 1]) is not None
+                        or chops_line.get(final_cuts[_i]) is not None
+                    ):
+                        effective_cuts.append(final_cuts[_i])
+                effective_cuts.append(final_cuts[-1])
+
+                cut_strips = strip.divide([cut - render_x for cut in effective_cuts[1:]])
+
+                # Since we are painting front to back, the first segments for a cut "wins".
+                # Leader chops (at effective_cuts boundaries) receive the actual strip.
+                # Follower chops (internal cuts that were skipped) receive _MERGED_STRIP
+                # so that lower-priority widgets cannot claim those positions – the leader
+                # strip is wider than its nominal chop size and covers them visually.
                 get_chops_line = chops_line.get
-                for cut, strip in zip(final_cuts, cut_strips):
-                    if get_chops_line(cut) is None:
-                        chops_line[cut] = strip
+                effective_set = set(effective_cuts[:-1])
+                eff_iter = iter(cut_strips)
+                for cut in final_cuts[:-1]:
+                    if cut in effective_set:
+                        strip_part = next(eff_iter)
+                        if get_chops_line(cut) is None:
+                            chops_line[cut] = strip_part
+                    else:
+                        if get_chops_line(cut) is None:
+                            chops_line[cut] = _MERGED_STRIP
         return cast("Sequence[Mapping[int, Strip]]", chops)
 
     def __rich__(self) -> StripRenderable:
