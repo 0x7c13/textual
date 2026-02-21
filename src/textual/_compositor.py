@@ -1246,6 +1246,9 @@ class Compositor:
                 chops_line = chops[y]
                 final_cuts = [cut for cut in cuts[y] if (last_cut >= cut >= first_cut)]
 
+                if len(final_cuts) < 2:
+                    continue
+
                 # Compute effective cuts: skip "internal" cuts where both adjacent
                 # chops are currently unfilled (None).  When the same widget wins
                 # both sides of a cut the division is unnecessary, and – crucially –
