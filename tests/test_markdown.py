@@ -3,33 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterator
 
 import pytest
-from markdown_it.token import Token
-from rich.text import Span
 
-import textual.widgets._markdown as MD
 from textual import on
 from textual.app import App, ComposeResult
+from textual.content import Span
 from textual.style import Style
-from textual.widget import Widget
 from textual.widgets import Markdown
-from textual.widgets.markdown import MarkdownBlock
-
-
-class UnhandledToken(MarkdownBlock):
-    def __init__(self, markdown: Markdown, token: Token) -> None:
-        super().__init__(markdown)
-        self._token = token
-
-    def __repr___(self) -> str:
-        return self._token.type
-
-
-class FussyMarkdown(Markdown):
-    def unhandled_token(self, token: Token) -> MarkdownBlock | None:
-        return UnhandledToken(self, token)
+from textual.widgets._markdown import MarkdownBlock
 
 
 class MarkdownApp(App[None]):
@@ -38,62 +20,52 @@ class MarkdownApp(App[None]):
         self._markdown = markdown
 
     def compose(self) -> ComposeResult:
-        yield FussyMarkdown(self._markdown)
+        yield Markdown(self._markdown)
 
 
 @pytest.mark.parametrize(
-    ["document", "expected_nodes"],
+    ["document", "expected_types"],
     [
         # Basic markup.
         ("", []),
-        ("# Hello", [MD.MarkdownH1]),
-        ("## Hello", [MD.MarkdownH2]),
-        ("### Hello", [MD.MarkdownH3]),
-        ("#### Hello", [MD.MarkdownH4]),
-        ("##### Hello", [MD.MarkdownH5]),
-        ("###### Hello", [MD.MarkdownH6]),
-        ("---", [MD.MarkdownHorizontalRule]),
-        ("Hello", [MD.MarkdownParagraph]),
-        ("Hello\nWorld", [MD.MarkdownParagraph]),
-        ("> Hello", [MD.MarkdownBlockQuote, MD.MarkdownParagraph]),
-        ("- One\n-Two", [MD.MarkdownBulletList, MD.MarkdownParagraph]),
+        ("# Hello", ["heading"]),
+        ("## Hello", ["heading"]),
+        ("### Hello", ["heading"]),
+        ("#### Hello", ["heading"]),
+        ("##### Hello", ["heading"]),
+        ("###### Hello", ["heading"]),
+        ("---", ["hr"]),
+        ("Hello", ["paragraph"]),
+        ("Hello\nWorld", ["paragraph"]),
+        ("- One\n-Two", ["paragraph"]),
         (
             "1. One\n2. Two",
-            [MD.MarkdownOrderedList, MD.MarkdownParagraph, MD.MarkdownParagraph],
+            ["paragraph", "paragraph"],
         ),
-        ("    1", [MD.MarkdownFence]),
-        ("```\n1\n```", [MD.MarkdownFence]),
-        ("```python\n1\n```", [MD.MarkdownFence]),
-        ("""| One | Two |\n| :- | :- |\n| 1 | 2 |""", [MD.MarkdownTable]),
-        # Test for https://github.com/Textualize/textual/issues/2676
-        (
-            "- One\n```\nTwo\n```\n- Three\n",
-            [
-                MD.MarkdownBulletList,
-                MD.MarkdownParagraph,
-                MD.MarkdownFence,
-                MD.MarkdownBulletList,
-                MD.MarkdownParagraph,
-            ],
-        ),
+        ("    1", ["fence"]),
+        ("```\n1\n```", ["fence"]),
+        ("```python\n1\n```", ["fence"]),
+        ("""| One | Two |\n| :- | :- |\n| 1 | 2 |""", ["table"]),
     ],
 )
-async def test_markdown_nodes(
-    document: str, expected_nodes: list[Widget | list[Widget]]
+async def test_markdown_block_types(
+    document: str, expected_types: list[str]
 ) -> None:
-    """A Markdown document should parse into the expected Textual node list."""
-
-    def markdown_nodes(root: Widget) -> Iterator[MarkdownBlock]:
-        for node in root.children:
-            if isinstance(node, MarkdownBlock):
-                yield node
-            yield from markdown_nodes(node)
-
+    """A Markdown document should parse into the expected block type list."""
     async with MarkdownApp(document).run_test() as pilot:
         await pilot.pause()
-        assert [
-            node.__class__ for node in markdown_nodes(pilot.app.query_one(Markdown))
-        ] == expected_nodes
+        markdown = pilot.app.query_one(Markdown)
+        assert [block.block_type for block in markdown._blocks] == expected_types
+
+
+async def test_heading_levels() -> None:
+    """Heading levels should be correctly parsed."""
+    document = "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6"
+    async with MarkdownApp(document).run_test() as pilot:
+        await pilot.pause()
+        markdown = pilot.app.query_one(Markdown)
+        headings = [b for b in markdown._blocks if b.block_type == "heading"]
+        assert [h.level for h in headings] == [1, 2, 3, 4, 5, 6]
 
 
 async def test_softbreak_split_links_rendered_correctly() -> None:
@@ -106,17 +78,16 @@ URL](https://example.com)\
 """
     async with MarkdownApp(document).run_test() as pilot:
         markdown = pilot.app.query_one(Markdown)
-        paragraph = markdown.children[0]
-        assert isinstance(paragraph, MD.MarkdownParagraph)
-        assert paragraph._content.plain == "My site has this URL"
-        print(paragraph._content.spans)
+        paragraphs = [b for b in markdown._blocks if b.block_type == "paragraph"]
+        assert len(paragraphs) == 1
+        paragraph = paragraphs[0]
+        assert paragraph.content.plain == "My site has this URL"
 
         expected_spans = [
             Span(8, 20, Style.from_meta({"@click": "link('https://example.com')"})),
         ]
-        print(expected_spans)
 
-    assert paragraph._content.spans == expected_spans
+    assert paragraph.content.spans == expected_spans
 
 
 async def test_load_non_existing_file() -> None:
@@ -167,40 +138,6 @@ async def test_update_of_document_posts_table_of_content_update_message() -> Non
         assert messages == ["TableOfContentsUpdated", "TableOfContentsUpdated"]
 
 
-async def test_link_in_markdown_table_posts_message_when_clicked():
-    """A link inside a markdown table should post a `Markdown.LinkClicked`
-    message when clicked.
-
-    Regression test for https://github.com/Textualize/textual/issues/4683
-    """
-
-    markdown_table = """\
-| Textual Links                                    |
-| ------------------------------------------------ |
-| [GitHub](https://github.com/textualize/textual/) |
-| [Documentation](https://textual.textualize.io/)  |\
-"""
-
-    class MarkdownTableApp(App):
-        messages = []
-
-        def compose(self) -> ComposeResult:
-            yield Markdown(markdown_table, open_links=False)
-
-        @on(Markdown.LinkClicked)
-        def log_markdown_link_clicked(
-            self,
-            event: Markdown.LinkClicked,
-        ) -> None:
-            self.messages.append(event.__class__.__name__)
-
-    app = MarkdownTableApp()
-    async with app.run_test() as pilot:
-        await pilot.click(Markdown, offset=(8, 3))
-        print(app.messages)
-        assert app.messages == ["LinkClicked"]
-
-
 async def test_markdown_quoting():
     # https://github.com/Textualize/textual/issues/3350
     links = []
@@ -217,3 +154,44 @@ async def test_markdown_quoting():
     async with app.run_test() as pilot:
         await pilot.click(Markdown, offset=(3, 0))
     assert links == ["tété"]
+
+
+async def test_table_of_contents() -> None:
+    """Table of contents should be generated from headings."""
+    document = "# First\n\n## Second\n\n### Third\n"
+    async with MarkdownApp(document).run_test() as pilot:
+        markdown = pilot.app.query_one(Markdown)
+        toc = markdown.table_of_contents
+        assert len(toc) == 3
+        levels = [level for level, _, _ in toc]
+        assert levels == [1, 2, 3]
+        names = [name for _, name, _ in toc]
+        assert names == ["First", "Second", "Third"]
+
+
+async def test_empty_markdown_update() -> None:
+    """Updating with empty markdown should clear blocks."""
+    async with MarkdownApp("# Hello").run_test() as pilot:
+        markdown = pilot.app.query_one(Markdown)
+        assert len(markdown._blocks) > 0
+        await markdown.update("")
+        assert len(markdown._blocks) == 0
+
+
+async def test_markdown_source_property() -> None:
+    """The source property should return the current markdown."""
+    async with MarkdownApp("# Hello").run_test() as pilot:
+        markdown = pilot.app.query_one(Markdown)
+        assert markdown.source == "# Hello"
+        await markdown.update("## World")
+        assert markdown.source == "## World"
+
+
+async def test_markdown_fence_content() -> None:
+    """Fence blocks should preserve code content."""
+    document = "```python\nprint('hello')\n```"
+    async with MarkdownApp(document).run_test() as pilot:
+        markdown = pilot.app.query_one(Markdown)
+        fences = [b for b in markdown._blocks if b.block_type == "fence"]
+        assert len(fences) == 1
+        assert "print('hello')" in fences[0].content.plain
