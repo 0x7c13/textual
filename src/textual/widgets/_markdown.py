@@ -216,6 +216,8 @@ class MarkdownBlock:
     """Lines of padding below content (rendered with block style, unlike margin)."""
     padding_left: int = 0
     """Cells of padding to the left of content."""
+    padding_right: int = 0
+    """Cells of padding to the right of content (inside block background)."""
     border_left: str = ""
     """Character to render as a left border on every content line."""
     text_align: str = "left"
@@ -297,12 +299,12 @@ def _token_to_content(
         elif child_type == "link_open":
             href = child.attrs.get("href", "")
             action = f"link({href!r})"
-            add_style(Style.from_meta({"@click": action}))
+            add_style(Style(underline=True) + Style.from_meta({"@click": action}))
         elif child_type == "image":
             href = child.attrs.get("src", "")
             alt = child.attrs.get("alt", "")
             action = f"link({href!r})"
-            add_style(Style.from_meta({"@click": action}))
+            add_style(Style(underline=True) + Style.from_meta({"@click": action}))
             add_content("🖼  ")
             if alt:
                 add_content(f"({alt})")
@@ -407,20 +409,21 @@ def _parse_tokens(
             border_left = ""
             in_list = False
             # Check if inside a list item or blockquote
-            for parent in reversed(stack):
-                if parent["type"] == "list_item":
-                    indent = parent.get("indent", 0)
-                    in_list = True
-                    # Only use prefix for the first paragraph in the list item
-                    if not parent.get("first_para_done"):
-                        prefix = parent.get("prefix", "")
-                        parent["first_para_done"] = True
-                    break
-                elif parent["type"] == "blockquote":
-                    indent = 4
-                    border_left = "▎ "
-                    style_name = "markdown--block-quote"
-                    break
+            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
+            if bq_depth > 0:
+                border_left = "▎ " * bq_depth
+                indent = 2
+                style_name = "markdown--block-quote"
+            else:
+                for parent in reversed(stack):
+                    if parent["type"] == "list_item":
+                        indent = parent.get("indent", 0)
+                        in_list = True
+                        # Only use prefix for the first paragraph in the list item
+                        if not parent.get("first_para_done"):
+                            prefix = parent.get("prefix", "")
+                            parent["first_para_done"] = True
+                        break
 
             blocks.append(
                 MarkdownBlock(
@@ -520,7 +523,7 @@ def _parse_tokens(
                     content=Content(""),
                     source_range=source_range,
                     style_name="markdown--hr",
-                    top_margin=1,
+                    top_margin=2,
                     bottom_margin=1,
                 )
             )
@@ -614,6 +617,7 @@ def _parse_tokens(
                     padding_top=1,
                     padding_bottom=1,
                     padding_left=2,
+                    padding_right=1,
                 )
             )
 
@@ -1067,7 +1071,7 @@ class Markdown(ScrollView, can_focus=True):
 
             # Calculate content height
             border_width = len(block.border_left) if block.border_left else 0
-            content_width = width - block.indent - block.padding_left - border_width
+            content_width = width - block.indent - block.padding_left - block.padding_right - border_width
             if content_width <= 0:
                 content_width = 1
 
@@ -1185,7 +1189,7 @@ class Markdown(ScrollView, can_focus=True):
         # Render the content
         content = block.content
         border_width = len(block.border_left) if block.border_left else 0
-        content_width = width - block.indent - block.padding_left - border_width
+        content_width = width - block.indent - block.padding_left - block.padding_right - border_width
         if content_width <= 0:
             content_width = 1
 
@@ -1250,6 +1254,8 @@ class Markdown(ScrollView, can_focus=True):
             if block.padding_left > 0:
                 segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             segments.extend(strip._segments)
+            if block.padding_right > 0:
+                segments.append(Segment(" " * block.padding_right, block_style.rich_style))
             strip = Strip(segments)
 
         # Pad strip to full width — use a style without text decorations
