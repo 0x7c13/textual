@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path, PurePath
 from typing import Callable, Iterable, Optional
@@ -335,12 +335,6 @@ HEADING_STYLES = {
 }
 
 
-def _bq_style_name(depth: int) -> str:
-    """Return the component class name for a given blockquote depth."""
-    clamped = min(depth, 3)
-    return f"markdown--bq-depth-{clamped}"
-
-
 def _get_list_indent(stack: list[dict]) -> int:
     """Get the indent from the nearest list_item in the stack."""
     for parent in reversed(stack):
@@ -427,7 +421,7 @@ def _parse_tokens(
             bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
             if bq_depth > 0:
                 border_left = "▌ " * bq_depth
-                style_name = _bq_style_name(bq_depth)
+                style_name = "markdown--block-quote"
                 # Also check for list item indent
                 for parent in reversed(stack):
                     if parent["type"] == "list_item":
@@ -478,7 +472,7 @@ def _parse_tokens(
                             block_type="blockquote_spacer",
                             content=Content(" "),
                             source_range=source_range,
-                            style_name=_bq_style_name(bq_depth),
+                            style_name="markdown--block-quote",
                             border_left="▌ " * bq_depth,
                             bq_depth=bq_depth,
                             indent=list_indent,
@@ -503,7 +497,7 @@ def _parse_tokens(
                         block_type="blockquote_spacer",
                         content=Content(" "),
                         source_range=source_range,
-                        style_name=_bq_style_name(bq_depth),
+                        style_name="markdown--block-quote",
                         border_left="▌ " * bq_depth,
                         bq_depth=bq_depth,
                         indent=list_indent,
@@ -813,9 +807,6 @@ class Markdown(ScrollView, can_focus=True):
         "markdown--table-header",
         "markdown--block-quote",
         "markdown--block-quote-border",
-        "markdown--bq-depth-1",
-        "markdown--bq-depth-2",
-        "markdown--bq-depth-3",
         "markdown--bullet",
         "code_inline",
         "em",
@@ -873,24 +864,6 @@ class Markdown(ScrollView, can_focus=True):
             color: $secondary;
         }
         & > .markdown--block-quote {
-        }
-        &:dark > .markdown--bq-depth-1 {
-            background: $foreground 7%;
-        }
-        &:dark > .markdown--bq-depth-2 {
-            background: $foreground 5%;
-        }
-        &:dark > .markdown--bq-depth-3 {
-            background: $foreground 3%;
-        }
-        &:light > .markdown--bq-depth-1 {
-            background: $foreground 5%;
-        }
-        &:light > .markdown--bq-depth-2 {
-            background: $foreground 3%;
-        }
-        &:light > .markdown--bq-depth-3 {
-            background: $foreground 2%;
         }
         &:dark > .markdown--block-quote-border {
             color: $text-primary 50%;
@@ -1377,35 +1350,64 @@ class Markdown(ScrollView, can_focus=True):
     def _get_block_style(self, block: MarkdownBlock) -> Style:
         """Get the visual style for a block.
 
+        For blockquote blocks, returns a style with a depth-dependent
+        background that compounds like the old ``$boost``-based nesting.
+
         Args:
             block: The markdown block.
 
         Returns:
             A Style instance.
         """
+        if block.bq_depth > 0 and block.block_type != "fence":
+            return self._get_bq_depth_style(block.bq_depth)
         if block.style_name:
             return self.get_visual_style(block.style_name)
         return self.visual_style
 
+    def _get_bq_depth_style(self, depth: int) -> Style:
+        """Compute a Style with a compounding background for blockquote depth.
+
+        Replicates the old ``background: $boost`` nesting where each level
+        adds ~4% of the contrast color on top of the previous level's bg.
+        Depth 1 gets a single boost (lightest change), deeper levels get
+        progressively more boost (more visible).
+        """
+        from textual.color import Color as TextualColor
+
+        base_style = self.get_visual_style("markdown--block-quote")
+        base_bg = self.visual_style.background
+        if base_bg is None:
+            return base_style
+
+        # Contrast color: white on dark themes, black on light themes
+        contrast = base_bg.get_contrast_text(1.0)
+        # Compound boost: each depth level blends 4% of contrast into bg
+        blended = base_bg
+        boost_factor = 0.04
+        for _ in range(depth):
+            blended = blended.blend(contrast, boost_factor, alpha=1.0)
+
+        return replace(base_style, background=blended)
+
     def _render_bq_border_segments(self, bq_depth: int) -> list[Segment]:
         """Render blockquote border segments with per-depth backgrounds.
 
-        Each ▌ uses the border foreground color combined with the depth's
-        background, so the right half of the half-block character seamlessly
-        matches the content background (no visible gap).
+        Each ▌ uses the border foreground color combined with that depth
+        level's background, so the right half of the half-block character
+        seamlessly matches the content background (no visible gap).
         """
         bq_border_style = self.get_visual_style("markdown--block-quote-border")
         segments: list[Segment] = []
         for d in range(1, bq_depth + 1):
-            depth_bg_style = self.get_visual_style(_bq_style_name(d))
-            # Combine border foreground with depth background so the
-            # right half of ▌ matches the content area
+            depth_style = self._get_bq_depth_style(d)
+            # Combine border foreground with depth background
             bar_style = RichStyle(
                 color=bq_border_style.rich_style.color,
-                bgcolor=depth_bg_style.rich_style.bgcolor,
+                bgcolor=depth_style.rich_style.bgcolor,
             )
             segments.append(Segment("▌", bar_style))
-            segments.append(Segment(" ", depth_bg_style.rich_style))
+            segments.append(Segment(" ", depth_style.rich_style))
         return segments
 
     def _render_padding_line(
