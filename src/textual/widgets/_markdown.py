@@ -458,6 +458,9 @@ def _parse_tokens(
 
         elif token_type == "blockquote_open":
             bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
+            # Ensure spacing before blockquotes (like the old margin: 1 0)
+            if bq_depth == 0 and blocks and blocks[-1].bottom_margin < 1:
+                blocks[-1].bottom_margin = 1
             if bq_depth > 0:
                 # Check if content was emitted at this depth
                 parent_bq = None
@@ -1879,11 +1882,21 @@ class MarkdownViewer(Widget, can_focus=False, can_focus_children=True):
 
     async def go(self, location: str | PurePath) -> None:
         """Navigate to a new document path."""
-        path, anchor = self.document.sanitize_location(str(location))
+        location_str = str(location)
+        # External URLs should be opened in the browser, not loaded as files
+        if location_str.startswith(("http://", "https://", "mailto:")):
+            self.app.open_url(location_str)
+            return
+        path, anchor = self.document.sanitize_location(location_str)
         if path == Path(".") and anchor:
             self.document.goto_anchor(anchor)
         else:
-            await self.document.load(self.navigator.go(location))
+            try:
+                await self.document.load(self.navigator.go(location))
+            except OSError:
+                # Not a readable local file — open as URL instead
+                self.app.open_url(location_str)
+                return
             self.post_message(self.NavigatorUpdated())
 
     async def back(self) -> None:
