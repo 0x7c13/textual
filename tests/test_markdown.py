@@ -81,7 +81,7 @@ URL](https://example.com)\
         paragraphs = [b for b in markdown._blocks if b.block_type == "paragraph"]
         assert len(paragraphs) == 1
         paragraph = paragraphs[0]
-        assert paragraph.content.plain == "My site has this URL"
+        assert paragraph.content.plain == "My site has\nthis\nURL"
 
         expected_spans = [
             Span(8, 20, Style.from_meta({"@click": "link('https://example.com')"})),

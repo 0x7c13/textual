@@ -277,7 +277,7 @@ def _token_to_content(
         if child_type == "hardbreak":
             add_content("\n")
         if child_type == "softbreak":
-            add_content(" ")
+            add_content("\n")
         elif child_type == "code_inline":
             add_style(".code_inline")
             add_content(child.content)
@@ -399,10 +399,12 @@ def _parse_tokens(
             prefix = ""
             style_name = "markdown--paragraph"
             border_left = ""
+            in_list = False
             # Check if inside a list item or blockquote
             for parent in reversed(stack):
                 if parent["type"] == "list_item":
                     indent = parent.get("indent", 0)
+                    in_list = True
                     # Only use prefix for the first paragraph in the list item
                     if not parent.get("first_para_done"):
                         prefix = parent.get("prefix", "")
@@ -420,7 +422,7 @@ def _parse_tokens(
                     content=content,
                     source_range=ctx["source_range"],
                     style_name=style_name,
-                    bottom_margin=1,
+                    bottom_margin=0 if in_list else 1,
                     indent=indent,
                     prefix=prefix,
                     border_left=border_left,
@@ -809,7 +811,7 @@ class Markdown(ScrollView, can_focus=True):
             background: black 10%;
             color: rgb(210, 210, 210);
         }
-        & > .markdown--fence:light {
+        &:light > .markdown--fence {
             background: white 30%;
         }
         & > .markdown--hr {
@@ -817,27 +819,29 @@ class Markdown(ScrollView, can_focus=True):
         }
         & > .markdown--block-quote {
             background: $boost;
+        }
+        &:dark > .markdown--block-quote {
             color: $text-primary 50%;
         }
-        & > .markdown--block-quote:light {
+        &:light > .markdown--block-quote {
             color: $text-secondary;
         }
-        & > .markdown--bullet {
+        &:dark > .markdown--bullet {
             color: $text-primary;
         }
-        & > .markdown--bullet:light {
+        &:light > .markdown--bullet {
             color: $text-secondary;
         }
         & > .markdown--table {
         }
-        & > .markdown--table:light {
+        &:light > .markdown--table {
             background: white 30%;
         }
-        & > .code_inline:dark {
+        &:dark > .code_inline {
             background: $warning 10%;
             color: $text-warning 95%;
         }
-        & > .code_inline:light {
+        &:light > .code_inline {
             background: $error 5%;
             color: $text-error 95%;
         }
