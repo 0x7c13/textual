@@ -214,6 +214,10 @@ class MarkdownBlock:
     """Lines of padding below content (rendered with block style, unlike margin)."""
     padding_left: int = 0
     """Cells of padding to the left of content."""
+    border_left: str = ""
+    """Character to render as a left border on every content line."""
+    text_align: str = "left"
+    """Text alignment: 'left', 'center', or 'right'."""
     code_language: str = ""
     """Language for code blocks."""
     is_header_row: bool = False
@@ -379,6 +383,7 @@ def _parse_tokens(
                     style_name=HEADING_STYLES.get(ctx["level"], "markdown--h1"),
                     top_margin=top_margin,
                     bottom_margin=1,
+                    text_align="center" if ctx["level"] == 1 else "left",
                 )
             )
 
@@ -392,7 +397,9 @@ def _parse_tokens(
             content = ctx.get("content", Content(""))
             indent = 0
             prefix = ""
-            # Check if inside a list item
+            style_name = "markdown--paragraph"
+            border_left = ""
+            # Check if inside a list item or blockquote
             for parent in reversed(stack):
                 if parent["type"] == "list_item":
                     indent = parent.get("indent", 0)
@@ -401,16 +408,22 @@ def _parse_tokens(
                         prefix = parent.get("prefix", "")
                         parent["first_para_done"] = True
                     break
+                elif parent["type"] == "blockquote":
+                    indent = 4
+                    border_left = "▎ "
+                    style_name = "markdown--block-quote"
+                    break
 
             blocks.append(
                 MarkdownBlock(
                     block_type="paragraph",
                     content=content,
                     source_range=ctx["source_range"],
-                    style_name="markdown--paragraph",
+                    style_name=style_name,
                     bottom_margin=1,
                     indent=indent,
                     prefix=prefix,
+                    border_left=border_left,
                 )
             )
 
@@ -746,6 +759,7 @@ class Markdown(ScrollView, can_focus=True):
         "markdown--hr",
         "markdown--table",
         "markdown--block-quote",
+        "markdown--bullet",
         "code_inline",
         "em",
         "strong",
@@ -800,6 +814,19 @@ class Markdown(ScrollView, can_focus=True):
         }
         & > .markdown--hr {
             color: $secondary;
+        }
+        & > .markdown--block-quote {
+            background: $boost;
+            color: $text-primary 50%;
+        }
+        & > .markdown--block-quote:light {
+            color: $text-secondary;
+        }
+        & > .markdown--bullet {
+            color: $text-primary;
+        }
+        & > .markdown--bullet:light {
+            color: $text-secondary;
         }
         & > .markdown--table {
         }
@@ -1054,7 +1081,8 @@ class Markdown(ScrollView, can_focus=True):
                 top_margin = 0
 
             # Calculate content height
-            content_width = width - block.indent - block.padding_left
+            border_width = len(block.border_left) if block.border_left else 0
+            content_width = width - block.indent - block.padding_left - border_width
             if content_width <= 0:
                 content_width = 1
 
@@ -1167,7 +1195,8 @@ class Markdown(ScrollView, can_focus=True):
 
         # Render the content
         content = block.content
-        content_width = width - block.indent - block.padding_left
+        border_width = len(block.border_left) if block.border_left else 0
+        content_width = width - block.indent - block.padding_left - border_width
         if content_width <= 0:
             content_width = 1
 
@@ -1187,8 +1216,21 @@ class Markdown(ScrollView, can_focus=True):
         else:
             strip = Strip.blank(content_width, block_style.rich_style)
 
-        # Apply indent, prefix, and padding_left
-        left_offset = block.indent + block.padding_left
+        # Center-align content for headings (e.g., H1)
+        if block.text_align == "center":
+            strip_len = strip.cell_length
+            if strip_len < content_width:
+                pad_left = (content_width - strip_len) // 2
+                pad_right = content_width - strip_len - pad_left
+                strip = Strip(
+                    [Segment(" " * pad_left, block_style.rich_style)]
+                    + strip._segments
+                    + [Segment(" " * pad_right, block_style.rich_style)],
+                    content_width,
+                )
+
+        # Apply indent, border_left, prefix, and padding_left
+        left_offset = block.indent + block.padding_left + border_width
         if left_offset > 0 or block.prefix:
             segments: list[Segment] = []
             if block.indent > 0:
@@ -1196,11 +1238,15 @@ class Markdown(ScrollView, can_focus=True):
                 if actual_line == 0 and block.prefix:
                     prefix_text = block.prefix
                     prefix_len = len(prefix_text)
+                    # Get bullet style if available
+                    bullet_style = self.get_visual_style("markdown--bullet")
                     pad = max(0, indent_width - prefix_len)
                     segments.append(Segment(" " * pad, block_style.rich_style))
-                    segments.append(Segment(prefix_text, block_style.rich_style))
+                    segments.append(Segment(prefix_text, bullet_style.rich_style))
                 else:
                     segments.append(Segment(" " * indent_width, block_style.rich_style))
+            if block.border_left:
+                segments.append(Segment(block.border_left, block_style.rich_style))
             if block.padding_left > 0:
                 segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             segments.extend(strip._segments)
