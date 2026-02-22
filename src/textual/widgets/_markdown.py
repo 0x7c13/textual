@@ -1376,8 +1376,6 @@ class Markdown(ScrollView, can_focus=True):
         Depth 1 gets a single boost (lightest change), deeper levels get
         progressively more boost (more visible).
         """
-        from textual.color import Color as TextualColor
-
         base_style = self.get_visual_style("markdown--block-quote")
         base_bg = self.visual_style.background
         if base_bg is None:
