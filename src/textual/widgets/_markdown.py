@@ -220,6 +220,8 @@ class MarkdownBlock:
     """Cells of padding to the right of content (inside block background)."""
     border_left: str = ""
     """Character to render as a left border on every content line."""
+    bq_depth: int = 0
+    """Blockquote nesting depth (0 = not in blockquote)."""
     text_align: str = "left"
     """Text alignment: 'left', 'center', or 'right'."""
     code_language: str = ""
@@ -333,6 +335,20 @@ HEADING_STYLES = {
 }
 
 
+def _bq_style_name(depth: int) -> str:
+    """Return the component class name for a given blockquote depth."""
+    clamped = min(depth, 3)
+    return f"markdown--bq-depth-{clamped}"
+
+
+def _get_list_indent(stack: list[dict]) -> int:
+    """Get the indent from the nearest list_item in the stack."""
+    for parent in reversed(stack):
+        if parent["type"] == "list_item":
+            return parent.get("indent", 0)
+    return 0
+
+
 def _parse_tokens(
     tokens: Iterable[Token],
     unhandled_token: Callable[[Token], MarkdownBlock | None] | None = None,
@@ -408,18 +424,24 @@ def _parse_tokens(
             style_name = "markdown--paragraph"
             border_left = ""
             in_list = False
-            # Check if inside a list item or blockquote
             bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
             if bq_depth > 0:
                 border_left = "▌ " * bq_depth
-                indent = 0
-                style_name = "markdown--block-quote"
+                style_name = _bq_style_name(bq_depth)
+                # Also check for list item indent
+                for parent in reversed(stack):
+                    if parent["type"] == "list_item":
+                        indent = parent.get("indent", 0)
+                        in_list = True
+                        if not parent.get("first_para_done"):
+                            prefix = parent.get("prefix", "")
+                            parent["first_para_done"] = True
+                        break
             else:
                 for parent in reversed(stack):
                     if parent["type"] == "list_item":
                         indent = parent.get("indent", 0)
                         in_list = True
-                        # Only use prefix for the first paragraph in the list item
                         if not parent.get("first_para_done"):
                             prefix = parent.get("prefix", "")
                             parent["first_para_done"] = True
@@ -436,19 +458,60 @@ def _parse_tokens(
                     indent=indent,
                     prefix=prefix,
                     border_left=border_left,
+                    bq_depth=bq_depth,
                 )
             )
 
         elif token_type == "blockquote_open":
+            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
+            if bq_depth > 0:
+                # Check if content was emitted at this depth
+                parent_bq = None
+                for s in reversed(stack):
+                    if s["type"] == "blockquote":
+                        parent_bq = s
+                        break
+                if parent_bq and len(blocks) > parent_bq.get("block_count_at_open", 0):
+                    list_indent = _get_list_indent(stack)
+                    blocks.append(
+                        MarkdownBlock(
+                            block_type="blockquote_spacer",
+                            content=Content(" "),
+                            source_range=source_range,
+                            style_name=_bq_style_name(bq_depth),
+                            border_left="▌ " * bq_depth,
+                            bq_depth=bq_depth,
+                            indent=list_indent,
+                        )
+                    )
             stack.append(
-                {"type": "blockquote", "source_range": source_range}
+                {
+                    "type": "blockquote",
+                    "source_range": source_range,
+                    "block_count_at_open": len(blocks),
+                }
             )
 
         elif token_type == "blockquote_close":
             stack.pop()
-            # Ensure spacing after blockquotes
-            if blocks:
-                blocks[-1].bottom_margin = 1
+            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
+            if bq_depth > 0:
+                list_indent = _get_list_indent(stack)
+                blocks.append(
+                    MarkdownBlock(
+                        block_type="blockquote_spacer",
+                        content=Content(" "),
+                        source_range=source_range,
+                        style_name=_bq_style_name(bq_depth),
+                        border_left="▌ " * bq_depth,
+                        bq_depth=bq_depth,
+                        indent=list_indent,
+                    )
+                )
+            else:
+                # Ensure spacing after top-level blockquotes
+                if blocks:
+                    blocks[-1].bottom_margin = 1
 
         elif token_type == "bullet_list_open":
             depth = sum(
@@ -602,6 +665,8 @@ def _parse_tokens(
 
             indent = 0
             prefix = ""
+            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
+            border_left = "▌ " * bq_depth if bq_depth > 0 else ""
             for parent in reversed(stack):
                 if parent["type"] == "list_item":
                     indent = parent.get("indent", 0)
@@ -622,6 +687,8 @@ def _parse_tokens(
                     padding_bottom=1,
                     padding_left=2,
                     padding_right=1,
+                    border_left=border_left,
+                    bq_depth=bq_depth,
                 )
             )
 
@@ -744,6 +811,9 @@ class Markdown(ScrollView, can_focus=True):
         "markdown--table-header",
         "markdown--block-quote",
         "markdown--block-quote-border",
+        "markdown--bq-depth-1",
+        "markdown--bq-depth-2",
+        "markdown--bq-depth-3",
         "markdown--bullet",
         "code_inline",
         "em",
@@ -801,6 +871,24 @@ class Markdown(ScrollView, can_focus=True):
             color: $secondary;
         }
         & > .markdown--block-quote {
+        }
+        &:dark > .markdown--bq-depth-1 {
+            background: $foreground 7%;
+        }
+        &:dark > .markdown--bq-depth-2 {
+            background: $foreground 5%;
+        }
+        &:dark > .markdown--bq-depth-3 {
+            background: $foreground 3%;
+        }
+        &:light > .markdown--bq-depth-1 {
+            background: $foreground 5%;
+        }
+        &:light > .markdown--bq-depth-2 {
+            background: $foreground 3%;
+        }
+        &:light > .markdown--bq-depth-3 {
+            background: $foreground 2%;
         }
         &:dark > .markdown--block-quote-border {
             color: $text-primary 50%;
@@ -1253,12 +1341,10 @@ class Markdown(ScrollView, can_focus=True):
                     segments.append(Segment(prefix_text, bullet_style.rich_style))
                 else:
                     segments.append(Segment(" " * indent_width, indent_style))
-            if block.border_left:
-                if block.style_name == "markdown--block-quote":
-                    bq_border_style = self.get_visual_style("markdown--block-quote-border")
-                    segments.append(Segment(block.border_left, bq_border_style.rich_style))
-                else:
-                    segments.append(Segment(block.border_left, block_style.rich_style))
+            if block.bq_depth > 0:
+                segments.extend(self._render_bq_border_segments(block.bq_depth))
+            elif block.border_left:
+                segments.append(Segment(block.border_left, block_style.rich_style))
             if block.padding_left > 0:
                 segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             segments.extend(strip._segments)
@@ -1299,6 +1385,20 @@ class Markdown(ScrollView, can_focus=True):
             return self.get_visual_style(block.style_name)
         return self.visual_style
 
+    def _render_bq_border_segments(self, bq_depth: int) -> list[Segment]:
+        """Render blockquote border segments with per-depth backgrounds.
+
+        Each ▌ uses the border style, and the space after each ▌ uses
+        that depth level's background style for a layered visual effect.
+        """
+        bq_border_style = self.get_visual_style("markdown--block-quote-border")
+        segments: list[Segment] = []
+        for d in range(1, bq_depth + 1):
+            segments.append(Segment("▌", bq_border_style.rich_style))
+            depth_bg_style = self.get_visual_style(_bq_style_name(d))
+            segments.append(Segment(" ", depth_bg_style.rich_style))
+        return segments
+
     def _render_padding_line(
         self, block: MarkdownBlock, base_style: Style, block_style: Style, width: int
     ) -> Strip:
@@ -1313,12 +1413,10 @@ class Markdown(ScrollView, can_focus=True):
             segments: list[Segment] = []
             if block.indent > 0:
                 segments.append(Segment(" " * block.indent, base_style.rich_style))
-            if block.border_left:
-                if block.style_name == "markdown--block-quote":
-                    bq_border_style = self.get_visual_style("markdown--block-quote-border")
-                    segments.append(Segment(block.border_left, bq_border_style.rich_style))
-                else:
-                    segments.append(Segment(block.border_left, block_style.rich_style))
+            if block.bq_depth > 0:
+                segments.extend(self._render_bq_border_segments(block.bq_depth))
+            elif block.border_left:
+                segments.append(Segment(block.border_left, block_style.rich_style))
             if block.padding_left > 0:
                 segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             remaining = width - left_offset
