@@ -1343,11 +1343,6 @@ class Markdown(ScrollView, can_focus=True):
             )
         strip = strip.extend_cell_length(width, pad_rich_style)
 
-        # Apply link metadata
-        if block.block_type in ("paragraph", "heading", "table"):
-            meta = {"block": block.block_type}
-            strip = strip.apply_meta(meta)
-
         return strip
 
     def _get_block_style(self, block: MarkdownBlock) -> Style:
@@ -1881,9 +1876,8 @@ class MarkdownViewer(Widget, can_focus=False, can_focus_children=True):
     async def go(self, location: str | PurePath) -> None:
         """Navigate to a new document path."""
         location_str = str(location)
-        # External URLs should be opened in the browser, not loaded as files
+        # External URLs are already handled by Markdown.on_markdown_link_clicked
         if location_str.startswith(("http://", "https://", "mailto:")):
-            self.app.open_url(location_str)
             return
         path, anchor = self.document.sanitize_location(location_str)
         if path == Path(".") and anchor:
@@ -1892,8 +1886,6 @@ class MarkdownViewer(Widget, can_focus=False, can_focus_children=True):
             try:
                 await self.document.load(self.navigator.go(location))
             except OSError:
-                # Not a readable local file — open as URL instead
-                self.app.open_url(location_str)
                 return
             self.post_message(self.NavigatorUpdated())
 
