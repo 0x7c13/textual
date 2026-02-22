@@ -15,6 +15,7 @@ from rich.style import Style as RichStyle
 from rich.text import Text
 from typing_extensions import TypeAlias
 
+from textual._cells import cell_len
 from textual._slug import TrackedSlugs, slug_for_tcss_id
 from textual.app import ComposeResult
 from textual.await_complete import AwaitComplete
@@ -486,7 +487,7 @@ def _parse_tokens(
             list_ctx["item_count"] += 1
 
             depth = list_ctx["depth"]
-            indent = (depth + 1) * 2
+            indent = 4 + depth * 4
 
             if list_ctx["type"] == "bullet_list":
                 bullet_idx = depth % len(BULLETS)
@@ -635,12 +636,19 @@ def _build_table_blocks(
 
     col_count = len(headers)
 
-    # Calculate column widths
-    col_widths = [max(len(h.plain), 3) for h in headers]
+    def _cell_ljust(text: str, target_cells: int) -> str:
+        """Left-justify text to a target cell width (CJK-aware)."""
+        text_cells = cell_len(text)
+        if text_cells >= target_cells:
+            return text
+        return text + " " * (target_cells - text_cells)
+
+    # Calculate column widths using cell length (CJK-aware)
+    col_widths = [max(cell_len(h.plain), 3) for h in headers]
     for row in rows:
-        for i, cell in enumerate(row):
+        for i, cell_content in enumerate(row):
             if i < len(col_widths):
-                col_widths[i] = max(col_widths[i], len(cell.plain))
+                col_widths[i] = max(col_widths[i], cell_len(cell_content.plain))
 
     # Build table content as formatted text
     lines: list[str] = []
@@ -649,27 +657,28 @@ def _build_table_blocks(
     def format_row(cells: list[Content], is_header: bool = False) -> None:
         parts: list[str] = []
         row_spans: list[Span] = []
-        pos = 2  # Start after "│ "
+        # Track character position (for Content span offsets)
+        char_pos = 2  # Start after "│ " (2 characters)
         parts.append("│ ")
-        for i, cell in enumerate(cells):
+        for i, cell_item in enumerate(cells):
             if i >= col_count:
                 break
-            cell_text = cell.plain
-            width = col_widths[i] if i < len(col_widths) else len(cell_text)
-            padded = cell_text.ljust(width)
-            # Copy spans from original content, adjusted to position
-            for span in cell.spans:
+            cell_text = cell_item.plain
+            width = col_widths[i] if i < len(col_widths) else cell_len(cell_text)
+            padded = _cell_ljust(cell_text, width)
+            # Copy spans from original content, adjusted to character position
+            for span in cell_item.spans:
                 row_spans.append(
-                    Span(span.start + pos, span.end + pos, span.style)
+                    Span(span.start + char_pos, span.end + char_pos, span.style)
                 )
             parts.append(padded)
-            pos += width
+            char_pos += len(padded)  # Advance by character count
             if i < col_count - 1:
                 parts.append(" │ ")
-                pos += 3
+                char_pos += 3
             else:
                 parts.append(" │")
-                pos += 2
+                char_pos += 2
         line_text = "".join(parts)
         lines.append(line_text)
         line_spans.append(row_spans)
@@ -706,7 +715,7 @@ def _build_table_blocks(
             all_spans.append(
                 Span(span.start + offset, span.end + offset, span.style)
             )
-        offset += len(line) + 1  # +1 for newline
+        offset += len(line) + 1  # +1 for newline character
         if i < len(lines) - 1:
             all_text_parts.append("\n")
 
