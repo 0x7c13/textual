@@ -1390,14 +1390,21 @@ class Markdown(ScrollView, can_focus=True):
     def _render_bq_border_segments(self, bq_depth: int) -> list[Segment]:
         """Render blockquote border segments with per-depth backgrounds.
 
-        Each ▌ uses the border style, and the space after each ▌ uses
-        that depth level's background style for a layered visual effect.
+        Each ▌ uses the border foreground color combined with the depth's
+        background, so the right half of the half-block character seamlessly
+        matches the content background (no visible gap).
         """
         bq_border_style = self.get_visual_style("markdown--block-quote-border")
         segments: list[Segment] = []
         for d in range(1, bq_depth + 1):
-            segments.append(Segment("▌", bq_border_style.rich_style))
             depth_bg_style = self.get_visual_style(_bq_style_name(d))
+            # Combine border foreground with depth background so the
+            # right half of ▌ matches the content area
+            bar_style = RichStyle(
+                color=bq_border_style.rich_style.color,
+                bgcolor=depth_bg_style.rich_style.bgcolor,
+            )
+            segments.append(Segment("▌", bar_style))
             segments.append(Segment(" ", depth_bg_style.rich_style))
         return segments
 
