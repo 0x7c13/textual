@@ -208,6 +208,12 @@ class MarkdownBlock:
     """Left indentation in cells."""
     prefix: str = ""
     """A prefix string (e.g. bullet character) to render before the first line."""
+    padding_top: int = 0
+    """Lines of padding above content (rendered with block style, unlike margin)."""
+    padding_bottom: int = 0
+    """Lines of padding below content (rendered with block style, unlike margin)."""
+    padding_left: int = 0
+    """Cells of padding to the left of content."""
     code_language: str = ""
     """Language for code blocks."""
     is_header_row: bool = False
@@ -578,6 +584,9 @@ def _parse_tokens(
                     code_language=language,
                     indent=indent,
                     prefix=prefix,
+                    padding_top=1,
+                    padding_bottom=1,
+                    padding_left=2,
                 )
             )
 
@@ -788,6 +797,9 @@ class Markdown(ScrollView, can_focus=True):
         }
         & > .markdown--fence:light {
             background: white 30%;
+        }
+        & > .markdown--hr {
+            color: $secondary;
         }
         & > .markdown--table {
         }
@@ -1042,7 +1054,7 @@ class Markdown(ScrollView, can_focus=True):
                 top_margin = 0
 
             # Calculate content height
-            content_width = width - block.indent
+            content_width = width - block.indent - block.padding_left
             if content_width <= 0:
                 content_width = 1
 
@@ -1050,6 +1062,9 @@ class Markdown(ScrollView, can_focus=True):
                 content_height = 1
             else:
                 content_height = block.content.get_height({}, content_width)
+
+            # Add padding to content height
+            content_height += block.padding_top + block.padding_bottom
 
             total_height = top_margin + content_height + block.bottom_margin
 
@@ -1115,31 +1130,44 @@ class Markdown(ScrollView, can_focus=True):
         # Determine where within the block this line falls
         local_line = line - info.start_line
 
-        style = self._get_block_style(block)
+        base_style = self.visual_style
+        block_style = self._get_block_style(block)
 
-        # Top margin
+        # Top margin (uses base/parent style, not block style)
         if local_line < info.top_margin:
-            return Strip.blank(width, style.rich_style)
+            return Strip.blank(width, base_style.rich_style)
 
-        # Bottom margin
+        # Bottom margin (uses base/parent style, not block style)
         content_end = info.top_margin + info.content_height
         if local_line >= content_end:
-            return Strip.blank(width, style.rich_style)
+            return Strip.blank(width, base_style.rich_style)
 
-        # Content line
+        # Content area line (relative to content start, includes padding)
         content_line = local_line - info.top_margin
+
+        # Top padding (blank line with block style/background)
+        if content_line < block.padding_top:
+            return Strip.blank(width, block_style.rich_style)
+
+        # Bottom padding (blank line with block style/background)
+        actual_content_end = info.content_height - block.padding_bottom
+        if content_line >= actual_content_end:
+            return Strip.blank(width, block_style.rich_style)
+
+        # Actual content line (within padding)
+        actual_line = content_line - block.padding_top
 
         if block.block_type == "hr":
             # Horizontal rule
             rule_char = "─"
             return Strip(
-                [Segment(rule_char * width, style.rich_style)],
+                [Segment(rule_char * width, block_style.rich_style)],
                 width,
             )
 
         # Render the content
         content = block.content
-        content_width = width - block.indent
+        content_width = width - block.indent - block.padding_left
         if content_width <= 0:
             content_width = 1
 
@@ -1150,33 +1178,36 @@ class Markdown(ScrollView, can_focus=True):
         strips = content.render_strips(
             content_width,
             None,
-            style,
+            block_style,
             render_options,
         )
 
-        if content_line < len(strips):
-            strip = strips[content_line]
+        if actual_line < len(strips):
+            strip = strips[actual_line]
         else:
-            strip = Strip.blank(content_width, style.rich_style)
+            strip = Strip.blank(content_width, block_style.rich_style)
 
-        # Apply indent and prefix
-        if block.indent > 0 or block.prefix:
+        # Apply indent, prefix, and padding_left
+        left_offset = block.indent + block.padding_left
+        if left_offset > 0 or block.prefix:
             segments: list[Segment] = []
             if block.indent > 0:
                 indent_width = block.indent
-                if content_line == 0 and block.prefix:
+                if actual_line == 0 and block.prefix:
                     prefix_text = block.prefix
                     prefix_len = len(prefix_text)
                     pad = max(0, indent_width - prefix_len)
-                    segments.append(Segment(" " * pad, style.rich_style))
-                    segments.append(Segment(prefix_text, style.rich_style))
+                    segments.append(Segment(" " * pad, block_style.rich_style))
+                    segments.append(Segment(prefix_text, block_style.rich_style))
                 else:
-                    segments.append(Segment(" " * indent_width, style.rich_style))
+                    segments.append(Segment(" " * indent_width, block_style.rich_style))
+            if block.padding_left > 0:
+                segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             segments.extend(strip._segments)
             strip = Strip(segments)
 
         # Pad strip to full width
-        strip = strip.extend_cell_length(width, style.rich_style)
+        strip = strip.extend_cell_length(width, block_style.rich_style)
 
         # Apply link metadata
         if block.block_type in ("paragraph", "heading", "table"):
