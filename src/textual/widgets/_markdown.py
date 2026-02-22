@@ -1341,7 +1341,16 @@ class Markdown(ScrollView, can_focus=True):
                 dim=pad_rich_style.dim,
                 italic=pad_rich_style.italic,
             )
-        strip = strip.extend_cell_length(width, pad_rich_style)
+        # For fence blocks, leave a 1-cell gap on the right so the background
+        # doesn't extend all the way to the scrollbar.
+        if block.block_type == "fence" and width > 1:
+            strip = strip.extend_cell_length(width - 1, pad_rich_style)
+            strip = Strip(
+                strip._segments + [Segment(" ", base_style.rich_style)],
+                width,
+            )
+        else:
+            strip = strip.extend_cell_length(width, pad_rich_style)
 
         return strip
 
@@ -1427,9 +1436,21 @@ class Markdown(ScrollView, can_focus=True):
             if block.padding_left > 0:
                 segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             remaining = width - left_offset
-            if remaining > 0:
+            # For fence blocks, leave a 1-cell gap on the right
+            if block.block_type == "fence" and remaining > 1:
+                segments.append(Segment(" " * (remaining - 1), block_style.rich_style))
+                segments.append(Segment(" ", base_style.rich_style))
+            elif remaining > 0:
                 segments.append(Segment(" " * remaining, block_style.rich_style))
             return Strip(segments, width)
+        if block.block_type == "fence" and width > 1:
+            return Strip(
+                [
+                    Segment(" " * (width - 1), block_style.rich_style),
+                    Segment(" ", base_style.rich_style),
+                ],
+                width,
+            )
         return Strip.blank(width, block_style.rich_style)
 
     def _build_table_strips(
