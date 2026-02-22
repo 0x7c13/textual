@@ -285,7 +285,7 @@ def _token_to_content(
         if child_type == "hardbreak":
             add_content("\n")
         if child_type == "softbreak":
-            add_content("\n")
+            add_content(" ")
         elif child_type == "code_inline":
             add_style(".code_inline")
             add_content(child.content)
@@ -411,8 +411,8 @@ def _parse_tokens(
             # Check if inside a list item or blockquote
             bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
             if bq_depth > 0:
-                border_left = "▎ " * bq_depth
-                indent = 2
+                border_left = "▌ " * bq_depth
+                indent = 0
                 style_name = "markdown--block-quote"
             else:
                 for parent in reversed(stack):
@@ -425,13 +425,14 @@ def _parse_tokens(
                             parent["first_para_done"] = True
                         break
 
+            in_blockquote = bq_depth > 0
             blocks.append(
                 MarkdownBlock(
                     block_type="paragraph",
                     content=content,
                     source_range=ctx["source_range"],
                     style_name=style_name,
-                    bottom_margin=0 if in_list else 1,
+                    bottom_margin=0 if (in_list or in_blockquote) else 1,
                     indent=indent,
                     prefix=prefix,
                     border_left=border_left,
@@ -445,6 +446,9 @@ def _parse_tokens(
 
         elif token_type == "blockquote_close":
             stack.pop()
+            # Ensure spacing after blockquotes
+            if blocks:
+                blocks[-1].bottom_margin = 1
 
         elif token_type == "bullet_list_open":
             depth = sum(
@@ -494,7 +498,7 @@ def _parse_tokens(
             list_ctx["item_count"] += 1
 
             depth = list_ctx["depth"]
-            indent = 4 + depth * 4
+            indent = 4 + depth * 2
 
             if list_ctx["type"] == "bullet_list":
                 bullet_idx = depth % len(BULLETS)
@@ -739,6 +743,7 @@ class Markdown(ScrollView, can_focus=True):
         "markdown--table",
         "markdown--table-header",
         "markdown--block-quote",
+        "markdown--block-quote-border",
         "markdown--bullet",
         "code_inline",
         "em",
@@ -796,12 +801,11 @@ class Markdown(ScrollView, can_focus=True):
             color: $secondary;
         }
         & > .markdown--block-quote {
-            background: $boost;
         }
-        &:dark > .markdown--block-quote {
+        &:dark > .markdown--block-quote-border {
             color: $text-primary 50%;
         }
-        &:light > .markdown--block-quote {
+        &:light > .markdown--block-quote-border {
             color: $text-secondary;
         }
         &:dark > .markdown--bullet {
@@ -1250,7 +1254,11 @@ class Markdown(ScrollView, can_focus=True):
                 else:
                     segments.append(Segment(" " * indent_width, indent_style))
             if block.border_left:
-                segments.append(Segment(block.border_left, block_style.rich_style))
+                if block.style_name == "markdown--block-quote":
+                    bq_border_style = self.get_visual_style("markdown--block-quote-border")
+                    segments.append(Segment(block.border_left, bq_border_style.rich_style))
+                else:
+                    segments.append(Segment(block.border_left, block_style.rich_style))
             if block.padding_left > 0:
                 segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             segments.extend(strip._segments)
@@ -1306,7 +1314,11 @@ class Markdown(ScrollView, can_focus=True):
             if block.indent > 0:
                 segments.append(Segment(" " * block.indent, base_style.rich_style))
             if block.border_left:
-                segments.append(Segment(block.border_left, block_style.rich_style))
+                if block.style_name == "markdown--block-quote":
+                    bq_border_style = self.get_visual_style("markdown--block-quote-border")
+                    segments.append(Segment(block.border_left, bq_border_style.rich_style))
+                else:
+                    segments.append(Segment(block.border_left, block_style.rich_style))
             if block.padding_left > 0:
                 segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             remaining = width - left_offset
