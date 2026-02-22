@@ -1344,7 +1344,7 @@ class Markdown(ScrollView, can_focus=True):
         # For fence blocks, leave a 1-cell gap on the right so the background
         # doesn't extend all the way to the scrollbar.
         if block.block_type == "fence" and width > 1:
-            strip = strip.extend_cell_length(width - 1, pad_rich_style)
+            strip = strip.adjust_cell_length(width - 1, pad_rich_style)
             strip = Strip(
                 strip._segments + [Segment(" ", base_style.rich_style)],
                 width,
