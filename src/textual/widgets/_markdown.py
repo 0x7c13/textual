@@ -482,6 +482,7 @@ def _parse_tokens(
                             border_left="▌ " * bq_depth,
                             bq_depth=bq_depth,
                             indent=list_indent,
+                            bottom_margin=0,
                         )
                     )
             stack.append(
@@ -506,6 +507,7 @@ def _parse_tokens(
                         border_left="▌ " * bq_depth,
                         bq_depth=bq_depth,
                         indent=list_indent,
+                        bottom_margin=0,
                     )
                 )
             else:
