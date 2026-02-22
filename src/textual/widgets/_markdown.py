@@ -454,6 +454,9 @@ def _parse_tokens(
         elif token_type == "bullet_list_close":
             list_stack.pop()
             stack.pop()
+            # Ensure spacing after top-level lists
+            if not list_stack and blocks:
+                blocks[-1].bottom_margin = 1
 
         elif token_type == "ordered_list_open":
             depth = sum(
@@ -472,6 +475,9 @@ def _parse_tokens(
         elif token_type == "ordered_list_close":
             list_stack.pop()
             stack.pop()
+            # Ensure spacing after top-level lists
+            if not list_stack and blocks:
+                blocks[-1].bottom_margin = 1
 
         elif token_type == "list_item_open":
             if not list_stack:
@@ -775,7 +781,7 @@ class Markdown(ScrollView, can_focus=True):
         overflow-y: auto;
         overflow-x: hidden;
         background: $surface;
-        padding: 1 0 1 2;
+        padding: 0 0 0 2;
 
         & > .markdown--h1 {
             color: $markdown-h1-color;
@@ -1083,7 +1089,7 @@ class Markdown(ScrollView, can_focus=True):
             # Compute top margin (collapse with previous bottom margin)
             top_margin = max(block.top_margin, last_bottom_margin) - last_bottom_margin
             if index == 0:
-                top_margin = 0
+                top_margin = 1
 
             # Calculate content height
             border_width = len(block.border_left) if block.border_left else 0
@@ -1115,7 +1121,7 @@ class Markdown(ScrollView, can_focus=True):
             current_line += total_height
             last_bottom_margin = block.bottom_margin
 
-        self._total_lines = current_line
+        self._total_lines = current_line + 1  # +1 for bottom spacing
         self.virtual_size = Size(width, self._total_lines)
 
     def _find_block_at_line(self, line: int) -> tuple[int, _BlockLineInfo] | None:
@@ -1298,17 +1304,19 @@ class Markdown(ScrollView, can_focus=True):
     ) -> Strip:
         """Render a padding line (e.g. top/bottom padding of a code fence).
 
-        These lines need the same indent as content lines so the block
-        background doesn't bleed into the indent area.
+        These lines use the exact same left-side construction as content lines
+        so that indent and padding_left are consistent.
         """
         border_width = len(block.border_left) if block.border_left else 0
-        left_offset = block.indent + border_width
+        left_offset = block.indent + block.padding_left + border_width
         if left_offset > 0:
             segments: list[Segment] = []
             if block.indent > 0:
                 segments.append(Segment(" " * block.indent, base_style.rich_style))
             if block.border_left:
                 segments.append(Segment(block.border_left, block_style.rich_style))
+            if block.padding_left > 0:
+                segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             remaining = width - left_offset
             if remaining > 0:
                 segments.append(Segment(" " * remaining, block_style.rich_style))
