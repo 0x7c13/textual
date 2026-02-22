@@ -224,6 +224,10 @@ class MarkdownBlock:
     """Language for code blocks."""
     is_header_row: bool = False
     """Whether this is a table header row."""
+    table_headers: list[Content] | None = None
+    """Header contents for table blocks."""
+    table_rows: list[list[Content]] | None = None
+    """Row contents for table blocks."""
 
 
 class MarkdownFence:
@@ -629,107 +633,60 @@ def _build_table_blocks(
 ) -> list[MarkdownBlock]:
     """Build MarkdownBlock objects for a table.
 
-    Returns a single block representing the entire table.
+    Stores raw table data; actual rendering is done at layout time
+    when the available width is known.
     """
     if not headers:
         return []
 
-    col_count = len(headers)
-
-    def _cell_ljust(text: str, target_cells: int) -> str:
-        """Left-justify text to a target cell width (CJK-aware)."""
-        text_cells = cell_len(text)
-        if text_cells >= target_cells:
-            return text
-        return text + " " * (target_cells - text_cells)
-
-    # Calculate column widths using cell length (CJK-aware)
-    col_widths = [max(cell_len(h.plain), 3) for h in headers]
-    for row in rows:
-        for i, cell_content in enumerate(row):
-            if i < len(col_widths):
-                col_widths[i] = max(col_widths[i], cell_len(cell_content.plain))
-
-    # Build table content as formatted text
-    lines: list[str] = []
-    line_spans: list[list[Span]] = []
-
-    def format_row(cells: list[Content], is_header: bool = False) -> None:
-        parts: list[str] = []
-        row_spans: list[Span] = []
-        # Track character position (for Content span offsets)
-        char_pos = 2  # Start after "│ " (2 characters)
-        parts.append("│ ")
-        for i, cell_item in enumerate(cells):
-            if i >= col_count:
-                break
-            cell_text = cell_item.plain
-            width = col_widths[i] if i < len(col_widths) else cell_len(cell_text)
-            padded = _cell_ljust(cell_text, width)
-            # Copy spans from original content, adjusted to character position
-            for span in cell_item.spans:
-                row_spans.append(
-                    Span(span.start + char_pos, span.end + char_pos, span.style)
-                )
-            parts.append(padded)
-            char_pos += len(padded)  # Advance by character count
-            if i < col_count - 1:
-                parts.append(" │ ")
-                char_pos += 3
-            else:
-                parts.append(" │")
-                char_pos += 2
-        line_text = "".join(parts)
-        lines.append(line_text)
-        line_spans.append(row_spans)
-
-    # Header row
-    format_row(headers, is_header=True)
-
-    # Separator
-    sep_parts = ["├─"]
-    for i, w in enumerate(col_widths):
-        sep_parts.append("─" * w)
-        if i < len(col_widths) - 1:
-            sep_parts.append("─┼─")
-        else:
-            sep_parts.append("─┤")
-    lines.append("".join(sep_parts))
-    line_spans.append([])
-
-    # Data rows
-    for row in rows:
-        # Pad row to match column count
-        padded_row = list(row)
-        while len(padded_row) < col_count:
-            padded_row.append(Content(""))
-        format_row(padded_row)
-
-    # Combine into a single Content with newlines
-    all_text_parts: list[str] = []
-    all_spans: list[Span] = []
-    offset = 0
-    for i, (line, spans) in enumerate(zip(lines, line_spans)):
-        all_text_parts.append(line)
-        for span in spans:
-            all_spans.append(
-                Span(span.start + offset, span.end + offset, span.style)
-            )
-        offset += len(line) + 1  # +1 for newline character
-        if i < len(lines) - 1:
-            all_text_parts.append("\n")
-
-    table_content = Content("".join(all_text_parts), spans=all_spans)
-
     return [
         MarkdownBlock(
             block_type="table",
-            content=table_content,
+            content=Content(""),
             source_range=source_range,
             style_name="markdown--table",
             bottom_margin=1,
+            table_headers=headers,
+            table_rows=rows,
         )
     ]
+
+
+def _wrap_cell_text(text: str, width: int) -> list[str]:
+    """Wrap text to fit within width cells (CJK-aware).
+
+    Args:
+        text: The text to wrap.
+        width: Maximum cell width per line.
+
+    Returns:
+        A list of wrapped lines.
+    """
+    if width <= 0:
+        return [text]
+    result: list[str] = []
+    for paragraph in text.split("\n"):
+        current = ""
+        current_width = 0
+        for char in paragraph:
+            cw = cell_len(char)
+            if current_width + cw > width and current:
+                result.append(current)
+                current = char
+                current_width = cw
+            else:
+                current += char
+                current_width += cw
+        result.append(current)
+    return result if result else [""]
+
+
+def _cell_ljust(text: str, target_cells: int) -> str:
+    """Left-justify text to a target cell width (CJK-aware)."""
+    text_cells = cell_len(text)
+    if text_cells >= target_cells:
+        return text
+    return text + " " * (target_cells - text_cells)
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +733,7 @@ class Markdown(ScrollView, can_focus=True):
         "markdown--fence",
         "markdown--hr",
         "markdown--table",
+        "markdown--table-header",
         "markdown--block-quote",
         "markdown--bullet",
         "code_inline",
@@ -852,6 +810,10 @@ class Markdown(ScrollView, can_focus=True):
         }
         &:light > .markdown--table {
             background: white 30%;
+        }
+        & > .markdown--table-header {
+            color: $primary;
+            text-style: bold;
         }
         &:dark > .code_inline {
             background: $warning 10%;
@@ -957,6 +919,8 @@ class Markdown(ScrollView, can_focus=True):
         """Total virtual lines."""
         self._line_cache: LRUCache[tuple[int, int], Strip] = LRUCache(maxsize=2048)
         """Cache of rendered strips, keyed by (line_number, width)."""
+        self._table_strips: dict[int, list[Strip]] = {}
+        """Pre-computed strips for table blocks, keyed by block index."""
         self._width_at_last_layout: int = 0
         """Width when blocks were last laid out."""
 
@@ -1090,6 +1054,7 @@ class Markdown(ScrollView, can_focus=True):
         self._width_at_last_layout = width
         self._block_line_info.clear()
         self._line_cache.clear()
+        self._table_strips.clear()
 
         current_line = 0
         last_bottom_margin = 0
@@ -1108,6 +1073,10 @@ class Markdown(ScrollView, can_focus=True):
 
             if block.block_type == "hr":
                 content_height = 1
+            elif block.block_type == "table" and block.table_headers is not None:
+                table_strips = self._build_table_strips(block, content_width)
+                self._table_strips[index] = table_strips
+                content_height = len(table_strips)
             else:
                 content_height = block.content.get_height({}, content_width)
 
@@ -1220,21 +1189,29 @@ class Markdown(ScrollView, can_focus=True):
         if content_width <= 0:
             content_width = 1
 
-        render_options = RenderOptions(
-            self._get_style,
-            self.styles,
-        )
-        strips = content.render_strips(
-            content_width,
-            None,
-            block_style,
-            render_options,
-        )
-
-        if actual_line < len(strips):
-            strip = strips[actual_line]
+        # Table blocks use pre-computed strips
+        if block.block_type == "table" and info.block_index in self._table_strips:
+            table_strips = self._table_strips[info.block_index]
+            if actual_line < len(table_strips):
+                strip = table_strips[actual_line]
+            else:
+                strip = Strip.blank(content_width, block_style.rich_style)
         else:
-            strip = Strip.blank(content_width, block_style.rich_style)
+            render_options = RenderOptions(
+                self._get_style,
+                self.styles,
+            )
+            strips = content.render_strips(
+                content_width,
+                None,
+                block_style,
+                render_options,
+            )
+
+            if actual_line < len(strips):
+                strip = strips[actual_line]
+            else:
+                strip = Strip.blank(content_width, block_style.rich_style)
 
         # Center-align content for headings (e.g., H1)
         if block.text_align == "center":
@@ -1332,6 +1309,140 @@ class Markdown(ScrollView, can_focus=True):
             return Strip(segments, width)
         return Strip.blank(width, block_style.rich_style)
 
+    def _build_table_strips(
+        self, block: MarkdownBlock, content_width: int
+    ) -> list[Strip]:
+        """Build pre-rendered strips for a table block.
+
+        Produces a fully-bordered table with cell wrapping, styled headers,
+        and thin box-drawing keylines matching the old grid-based rendering.
+        """
+        headers = block.table_headers or []
+        rows = block.table_rows or []
+        if not headers:
+            return []
+
+        col_count = len(headers)
+        cell_pad = 1  # 1 space padding on each side of cell content
+
+        # Styles
+        block_style = self._get_block_style(block)
+        header_style = self.get_visual_style("markdown--table-header")
+        cell_rs = block_style.rich_style
+        header_rs = header_style.rich_style
+        # Border style: use foreground at reduced intensity
+        border_rs = RichStyle(
+            color=block_style.rich_style.color,
+            bgcolor=block_style.rich_style.bgcolor,
+            dim=True,
+        )
+
+        # Calculate overhead: │ pad content pad │ pad content pad │ ...
+        # = 1 (left border) + col_count * (cell_pad + col_width + cell_pad) + (col_count - 1) * 1 (separators) + 1 (right border)
+        # = 2 + col_count * (2 * cell_pad) + (col_count - 1)
+        # = col_count * (2 * cell_pad + 1) + 1
+        overhead = col_count * (2 * cell_pad + 1) + 1
+        available = content_width - overhead
+        if available < col_count:
+            available = col_count
+
+        # Natural column widths (CJK-aware)
+        nat_widths = [max(cell_len(h.plain), 1) for h in headers]
+        for row in rows:
+            for i, cell_content in enumerate(row):
+                if i < col_count:
+                    nat_widths[i] = max(nat_widths[i], cell_len(cell_content.plain))
+
+        total_nat = sum(nat_widths)
+        if total_nat <= available:
+            col_widths = nat_widths[:]
+        else:
+            # Shrink proportionally
+            col_widths = [max(1, int(w * available / total_nat)) for w in nat_widths]
+            # Fix rounding errors
+            diff = available - sum(col_widths)
+            for i in range(abs(diff)):
+                idx = i % col_count
+                if diff > 0:
+                    col_widths[idx] += 1
+                elif col_widths[idx] > 1:
+                    col_widths[idx] -= 1
+
+        # Wrap cell text
+        wrapped_headers = [
+            _wrap_cell_text(h.plain, col_widths[i])
+            for i, h in enumerate(headers)
+        ]
+        header_height = max(
+            (len(lines) for lines in wrapped_headers), default=1
+        )
+
+        wrapped_rows: list[list[list[str]]] = []
+        row_heights: list[int] = []
+        for row in rows:
+            wrapped_row = []
+            for i in range(col_count):
+                if i < len(row):
+                    wrapped_row.append(
+                        _wrap_cell_text(row[i].plain, col_widths[i])
+                    )
+                else:
+                    wrapped_row.append([""])
+            rh = max((len(lines) for lines in wrapped_row), default=1)
+            wrapped_rows.append(wrapped_row)
+            row_heights.append(rh)
+
+        # Build strips
+        strips: list[Strip] = []
+
+        def h_border(left: str, mid: str, right: str) -> Strip:
+            segs: list[Segment] = [Segment(left, border_rs)]
+            for i, w in enumerate(col_widths):
+                segs.append(Segment("─" * (w + 2 * cell_pad), border_rs))
+                if i < col_count - 1:
+                    segs.append(Segment(mid, border_rs))
+            segs.append(Segment(right, border_rs))
+            return Strip(segs)
+
+        def data_row_strips(
+            wrapped_cells: list[list[str]], height: int, is_header: bool
+        ) -> list[Strip]:
+            text_rs = header_rs if is_header else cell_rs
+            result: list[Strip] = []
+            for line_idx in range(height):
+                segs: list[Segment] = [Segment("│", border_rs)]
+                for col_idx in range(col_count):
+                    cell_lines = wrapped_cells[col_idx]
+                    if line_idx < len(cell_lines):
+                        text = cell_lines[line_idx]
+                        padded = _cell_ljust(text, col_widths[col_idx])
+                    else:
+                        padded = " " * col_widths[col_idx]
+                    segs.append(Segment(" " * cell_pad, cell_rs))
+                    segs.append(Segment(padded, text_rs))
+                    segs.append(Segment(" " * cell_pad, cell_rs))
+                    segs.append(Segment("│", border_rs))
+                result.append(Strip(segs))
+            return result
+
+        # Top border
+        strips.append(h_border("┌", "┬", "┐"))
+        # Header
+        strips.extend(data_row_strips(wrapped_headers, header_height, True))
+        # Header separator
+        strips.append(h_border("├", "┼", "┤"))
+        # Data rows with separators between them
+        for row_idx, (wrapped_row, rh) in enumerate(
+            zip(wrapped_rows, row_heights)
+        ):
+            strips.extend(data_row_strips(wrapped_row, rh, False))
+            if row_idx < len(wrapped_rows) - 1:
+                strips.append(h_border("├", "┼", "┤"))
+        # Bottom border
+        strips.append(h_border("└", "┴", "┘"))
+
+        return strips
+
     def render_line(self, y: int) -> Strip:
         """Render a line of content for the Line API.
 
@@ -1398,6 +1509,7 @@ class Markdown(ScrollView, can_focus=True):
         self._markdown = markdown
         self._table_of_contents = None
         self._line_cache.clear()
+        self._table_strips.clear()
 
         async def await_update() -> None:
             async with self.lock:
@@ -1432,6 +1544,7 @@ class Markdown(ScrollView, can_focus=True):
         self._markdown = self.source + markdown
         self._table_of_contents = None
         self._line_cache.clear()
+        self._table_strips.clear()
 
         async def await_append() -> None:
             async with self.lock:
