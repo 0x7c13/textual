@@ -11,6 +11,7 @@ from urllib.parse import unquote
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 from rich.segment import Segment
+from rich.style import Style as RichStyle
 from rich.text import Text
 from typing_extensions import TypeAlias
 
@@ -774,7 +775,7 @@ class Markdown(ScrollView, can_focus=True):
         overflow-y: auto;
         overflow-x: hidden;
         background: $surface;
-        padding: 0 2;
+        padding: 0 0 0 2;
 
         & > .markdown--h1 {
             color: $markdown-h1-color;
@@ -1237,6 +1238,9 @@ class Markdown(ScrollView, can_focus=True):
         left_offset = block.indent + block.padding_left + border_width
         if left_offset > 0 or block.prefix:
             segments: list[Segment] = []
+            # Indent area uses base style (not block style) so block
+            # backgrounds (e.g. code fence) don't bleed into the indent
+            indent_style = base_style.rich_style
             if block.indent > 0:
                 indent_width = block.indent
                 if actual_line == 0 and block.prefix:
@@ -1245,10 +1249,10 @@ class Markdown(ScrollView, can_focus=True):
                     # Get bullet style if available
                     bullet_style = self.get_visual_style("markdown--bullet")
                     pad = max(0, indent_width - prefix_len)
-                    segments.append(Segment(" " * pad, block_style.rich_style))
+                    segments.append(Segment(" " * pad, indent_style))
                     segments.append(Segment(prefix_text, bullet_style.rich_style))
                 else:
-                    segments.append(Segment(" " * indent_width, block_style.rich_style))
+                    segments.append(Segment(" " * indent_width, indent_style))
             if block.border_left:
                 segments.append(Segment(block.border_left, block_style.rich_style))
             if block.padding_left > 0:
@@ -1256,8 +1260,18 @@ class Markdown(ScrollView, can_focus=True):
             segments.extend(strip._segments)
             strip = Strip(segments)
 
-        # Pad strip to full width
-        strip = strip.extend_cell_length(width, block_style.rich_style)
+        # Pad strip to full width — use a style without text decorations
+        # so underlines etc. don't extend into the padding area
+        pad_rich_style = block_style.rich_style
+        if pad_rich_style.underline or pad_rich_style.overline or pad_rich_style.strike:
+            pad_rich_style = RichStyle(
+                color=pad_rich_style.color,
+                bgcolor=pad_rich_style.bgcolor,
+                bold=pad_rich_style.bold,
+                dim=pad_rich_style.dim,
+                italic=pad_rich_style.italic,
+            )
+        strip = strip.extend_cell_length(width, pad_rich_style)
 
         # Apply link metadata
         if block.block_type in ("paragraph", "heading", "table"):
