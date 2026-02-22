@@ -1173,7 +1173,7 @@ class Markdown(ScrollView, can_focus=True):
                 else:
                     segments.append(Segment(" " * indent_width, style.rich_style))
             segments.extend(strip._segments)
-            strip = Strip(segments, width)
+            strip = Strip(segments)
 
         # Pad strip to full width
         strip = strip.extend_cell_length(width, style.rich_style)
