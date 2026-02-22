@@ -775,7 +775,7 @@ class Markdown(ScrollView, can_focus=True):
         overflow-y: auto;
         overflow-x: hidden;
         background: $surface;
-        padding: 0 0 0 2;
+        padding: 1 0 1 2;
 
         & > .markdown--h1 {
             color: $markdown-h1-color;
@@ -1180,12 +1180,12 @@ class Markdown(ScrollView, can_focus=True):
 
         # Top padding (blank line with block style/background)
         if content_line < block.padding_top:
-            return Strip.blank(width, block_style.rich_style)
+            return self._render_padding_line(block, base_style, block_style, width)
 
         # Bottom padding (blank line with block style/background)
         actual_content_end = info.content_height - block.padding_bottom
         if content_line >= actual_content_end:
-            return Strip.blank(width, block_style.rich_style)
+            return self._render_padding_line(block, base_style, block_style, width)
 
         # Actual content line (within padding)
         actual_line = content_line - block.padding_top
@@ -1292,6 +1292,28 @@ class Markdown(ScrollView, can_focus=True):
         if block.style_name:
             return self.get_visual_style(block.style_name)
         return self.visual_style
+
+    def _render_padding_line(
+        self, block: MarkdownBlock, base_style: Style, block_style: Style, width: int
+    ) -> Strip:
+        """Render a padding line (e.g. top/bottom padding of a code fence).
+
+        These lines need the same indent as content lines so the block
+        background doesn't bleed into the indent area.
+        """
+        border_width = len(block.border_left) if block.border_left else 0
+        left_offset = block.indent + border_width
+        if left_offset > 0:
+            segments: list[Segment] = []
+            if block.indent > 0:
+                segments.append(Segment(" " * block.indent, base_style.rich_style))
+            if block.border_left:
+                segments.append(Segment(block.border_left, block_style.rich_style))
+            remaining = width - left_offset
+            if remaining > 0:
+                segments.append(Segment(" " * remaining, block_style.rich_style))
+            return Strip(segments, width)
+        return Strip.blank(width, block_style.rich_style)
 
     def render_line(self, y: int) -> Strip:
         """Render a line of content for the Line API.
