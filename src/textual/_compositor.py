@@ -1276,7 +1276,14 @@ class Compositor:
                 eff_iter = iter(cut_strips)
                 for cut in final_cuts[:-1]:
                     if cut in effective_set:
-                        strip_part = next(eff_iter)
+                        strip_part = next(eff_iter, None)
+                        if strip_part is None:
+                            # strip.divide() filters out cuts beyond the
+                            # strip's cell_length, so fewer strips may be
+                            # returned than effective cuts.  Once exhausted,
+                            # remaining chops stay None for lower-priority
+                            # widgets to fill.
+                            break
                         if get_chops_line(cut) is None:
                             chops_line[cut] = strip_part
                     else:
