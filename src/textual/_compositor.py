@@ -12,6 +12,7 @@ without having to render the entire screen.
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from operator import itemgetter
 from typing import (
     TYPE_CHECKING,
@@ -37,6 +38,15 @@ from textual.geometry import NULL_SPACING, Offset, Region, Size, Spacing
 from textual.map_geometry import MapGeometry
 from textual.strip import Strip, StripRenderable
 from textual.widget import Widget
+
+# Sentinel strip used to mark "merged" chop positions.
+# When a higher-priority widget wins both sides of a cut, we avoid dividing its
+# strip there (which would split double-width CJK characters). The leader chop
+# gets the wide un-split strip; follower chops get this sentinel so that
+# lower-priority widgets cannot fill them (which would corrupt the display).
+_MERGED_STRIP: Strip = Strip([], 0)
+
+_ALWAYS_TRUE: Callable[[int], bool] = lambda _: True
 
 if TYPE_CHECKING:
     from typing_extensions import TypeAlias
@@ -170,18 +180,15 @@ class ChopsUpdate(CompositorUpdate):
         self,
         chops: Sequence[Mapping[int, Strip | None]],
         spans: list[tuple[int, int, int]],
-        chop_ends: list[list[int]],
     ) -> None:
         """A renderable which updates chops (fragments of lines).
 
         Args:
             chops: A mapping of offsets to list of segments, per line.
-            crop: Region to restrict update to.
-            chop_ends: A list of the end offsets for each line
+            spans: List of (y, x1, x2) spans to update.
         """
         self.chops = chops
         self.spans = spans
-        self.chop_ends = chop_ends
 
     def __rich_console__(
         self, console: Console, options: ConsoleOptions
@@ -189,17 +196,21 @@ class ChopsUpdate(CompositorUpdate):
         move_to = Control.move_to
         new_line = Segment.line()
         chops = self.chops
-        chop_ends = self.chop_ends
         last_y = self.spans[-1][0]
 
         _cell_len = cell_len
         for y, x1, x2 in self.spans:
             line = chops[y]
-            ends = chop_ends[y]
-            for end, (x, strip) in zip(ends, line.items()):
+            for x, strip in line.items():
                 # TODO: crop to x extents
-                if strip is None:
+                if strip is None or strip is _MERGED_STRIP:
+                    # Skip unfilled chops (None) and _MERGED_STRIP sentinels.
                     continue
+
+                # Use actual strip width rather than the nominal cut-based end so
+                # that merged leader strips (wider than their nominal chop bucket)
+                # are rendered correctly for double-width character preservation.
+                end = x + strip.cell_length
 
                 if x > x2 or end <= x1:
                     continue
@@ -246,15 +257,19 @@ class ChopsUpdate(CompositorUpdate):
 
         move_to = Control.move_to
         chops = self.chops
-        chop_ends = self.chop_ends
         last_y = self.spans[-1][0]
 
         for y, x1, x2 in self.spans:
             line = chops[y]
-            ends = chop_ends[y]
-            for end, (x, strip) in zip(ends, line.items()):
-                if strip is None:
+            for x, strip in line.items():
+                if strip is None or strip is _MERGED_STRIP:
+                    # Skip unfilled chops (None) and _MERGED_STRIP sentinels.
                     continue
+
+                # Use actual strip width rather than the nominal cut-based end so
+                # that merged leader strips (wider than their nominal chop bucket)
+                # are rendered correctly for double-width character preservation.
+                end = x + strip.cell_length
 
                 if x > x2 or end <= x1:
                     continue
@@ -1046,21 +1061,21 @@ class Compositor:
 
         if crop:
             crop_overlaps = crop.overlaps
-            widget_regions = [
+            widgets_iter = (
                 (widget, region, clip)
                 for widget, (region, clip) in visible_widgets.items()
                 if crop_overlaps(clip)
-            ]
+            )
         else:
-            widget_regions = [
+            widgets_iter = (
                 (widget, region, clip)
                 for widget, (region, clip) in visible_widgets.items()
-            ]
+            )
 
         intersection = _Region.intersection
         contains_region = _Region.contains_region
 
-        for widget, region, clip in widget_regions:
+        for widget, region, clip in widgets_iter:
             if contains_region(clip, region):
                 yield (
                     region,
@@ -1146,7 +1161,7 @@ class Compositor:
         screen_region = self.size.region
         self._dirty_regions.clear()
         crop = screen_region
-        chops = self._render_chops(crop, lambda y: True)
+        chops = self._render_chops(crop, _ALWAYS_TRUE)
         render_strips: list[Iterable[Strip]]
         if simplify:
             # Simplify is done when exporting to SVG
@@ -1176,8 +1191,7 @@ class Compositor:
         else:
             return None
         chops = self._render_chops(crop, is_rendered_line)
-        chop_ends = [cut_set[1:] for cut_set in self.cuts]
-        return ChopsUpdate(chops, spans, chop_ends)
+        return ChopsUpdate(chops, spans)
 
     def render_strips(self, size: Size | None = None) -> list[Strip]:
         """Render to a list of strips.
@@ -1190,7 +1204,7 @@ class Compositor:
         """
         if size is None:
             size = self.size
-        chops = self._render_chops(size.region, lambda y: True)
+        chops = self._render_chops(size.region, _ALWAYS_TRUE)
         render_strips = [Strip.join(chop.values()) for chop in chops[: size.height]]
         return render_strips
 
@@ -1219,6 +1233,9 @@ class Compositor:
         renders = self._get_renders(crop)
         intersection = Region.intersection
 
+        _bisect_left = bisect_left
+        _bisect_right = bisect_right
+
         for region, clip, strips in renders:
             render_region = intersection(region, clip)
             render_x = render_region.x
@@ -1229,14 +1246,61 @@ class Compositor:
                     continue
 
                 chops_line = chops[y]
-                final_cuts = [cut for cut in cuts[y] if (last_cut >= cut >= first_cut)]
-                cut_strips = strip.divide([cut - render_x for cut in final_cuts[1:]])
+                # cuts[y] is sorted; use bisect to extract the relevant range.
+                line_cuts = cuts[y]
+                lo = _bisect_left(line_cuts, first_cut)
+                hi = _bisect_right(line_cuts, last_cut)
+                final_cuts = line_cuts[lo:hi]
 
-                # Since we are painting front to back, the first segments for a cut "wins"
+                if len(final_cuts) < 2:
+                    continue
+
+                # Compute effective cuts: skip "internal" cuts where both adjacent
+                # chops are currently unfilled (None).  When the same widget wins
+                # both sides of a cut the division is unnecessary, and – crucially –
+                # it can split a double-width (CJK) character into two spaces.
+                # A cut is a *real* boundary only when the chop on at least one side
+                # is already claimed by a higher-priority widget (not None).
+                effective_cuts = [final_cuts[0]]
+                for _i in range(1, len(final_cuts) - 1):
+                    if (
+                        chops_line.get(final_cuts[_i - 1]) is not None
+                        or chops_line.get(final_cuts[_i]) is not None
+                    ):
+                        effective_cuts.append(final_cuts[_i])
+                effective_cuts.append(final_cuts[-1])
+
+                cut_strips = strip.divide([cut - render_x for cut in effective_cuts[1:]])
+
+                # Since we are painting front to back, the first segments for a cut "wins".
+                # Leader chops (at effective_cuts boundaries) receive the actual strip.
+                # Follower chops (internal cuts that were skipped) receive _MERGED_STRIP
+                # so that lower-priority widgets cannot claim those positions – the leader
+                # strip is wider than its nominal chop size and covers them visually.
+                #
+                # Walk effective_cuts by index instead of building a set — both
+                # lists are sorted and effective_cuts is a subsequence of
+                # final_cuts, so a simple index comparison suffices.
                 get_chops_line = chops_line.get
-                for cut, strip in zip(final_cuts, cut_strips):
-                    if get_chops_line(cut) is None:
-                        chops_line[cut] = strip
+                num_effective = len(effective_cuts) - 1
+                eff_idx = 0
+                eff_iter = iter(cut_strips)
+                for cut in final_cuts[:-1]:
+                    if eff_idx < num_effective and cut == effective_cuts[eff_idx]:
+                        strip_part = next(eff_iter, None)
+                        if strip_part is None:
+                            # strip.divide() filters out cuts beyond the
+                            # strip's cell_length, so fewer strips may be
+                            # returned than effective cuts.  Once exhausted,
+                            # remaining chops stay None for lower-priority
+                            # widgets to fill.
+                            break
+                        eff_idx += 1
+                        if get_chops_line(cut) is None:
+                            chops_line[cut] = strip_part
+                    else:
+                        if get_chops_line(cut) is None:
+                            chops_line[cut] = _MERGED_STRIP
         return cast("Sequence[Mapping[int, Strip]]", chops)
 
     def __rich__(self) -> StripRenderable:
