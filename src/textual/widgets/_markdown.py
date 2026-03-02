@@ -822,6 +822,7 @@ class Markdown(ScrollView, can_focus=True):
         color: $foreground;
         overflow-y: auto;
         overflow-x: hidden;
+        scrollbar-gutter: stable;
         background: $surface;
         padding: 0 0 0 2;
 
