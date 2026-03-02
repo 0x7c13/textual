@@ -1026,6 +1026,15 @@ class Markdown(ScrollView, can_focus=True):
                 ).set_sender(self)
             )
 
+    def _watch_show_vertical_scrollbar(self) -> None:
+        """Re-layout when vertical scrollbar visibility changes.
+
+        When the scrollbar appears or disappears, the available content width
+        changes. We need to re-layout blocks to account for the new width.
+        """
+        if self._blocks:
+            self._layout_blocks()
+
     @classmethod
     def get_stream(cls, markdown: Markdown) -> MarkdownStream:
         """Get a [MarkdownStream][textual.widgets.markdown.MarkdownStream] instance.
@@ -1175,6 +1184,7 @@ class Markdown(ScrollView, can_focus=True):
 
         self._total_lines = current_line + 1  # +1 for bottom spacing
         self.virtual_size = Size(width, self._total_lines)
+        self._refresh_scrollbars()
 
     def _find_block_at_line(self, line: int) -> tuple[int, _BlockLineInfo] | None:
         """Find which block contains a given virtual line.
