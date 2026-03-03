@@ -1027,6 +1027,31 @@ class Markdown(ScrollView, can_focus=True):
                 ).set_sender(self)
             )
 
+    def _size_updated(
+        self,
+        size: Size,
+        virtual_size: Size,
+        container_size: Size,
+        layout: bool = True,
+    ) -> bool:
+        """Called when the widget's size is updated by the layout system.
+
+        We override this to ensure that _layout_blocks() is called whenever the
+        container dimensions change, so that virtual_size is always fresh before
+        _refresh_scrollbars() runs. Without this, _refresh_scrollbars() can be
+        called (via _scroll_update in the parent) with a stale virtual_size that
+        doesn't match the current container height, causing the scrollbar to
+        incorrectly hide.
+        """
+        old_size = self._size
+        result = super()._size_updated(size, virtual_size, container_size, layout)
+        # Re-layout blocks if the widget size changed, so virtual_size is
+        # recomputed for the new dimensions and _refresh_scrollbars sees
+        # the correct content height.
+        if old_size != size and self._blocks:
+            self._layout_blocks()
+        return result
+
     def _watch_show_vertical_scrollbar(self) -> None:
         """Re-layout when vertical scrollbar visibility changes.
 
