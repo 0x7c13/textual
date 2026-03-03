@@ -822,7 +822,6 @@ class Markdown(ScrollView, can_focus=True):
         color: $foreground;
         overflow-y: auto;
         overflow-x: hidden;
-        scrollbar-gutter: stable;
         background: $surface;
         padding: 0 0 0 2;
 
@@ -998,6 +997,8 @@ class Markdown(ScrollView, can_focus=True):
         """Pre-computed strips for table blocks, keyed by block index."""
         self._width_at_last_layout: int = 0
         """Width when blocks were last laid out."""
+        self._laying_out: bool = False
+        """Guard against recursive _layout_blocks calls."""
 
     @property
     def table_of_contents(self) -> TableOfContentsType:
@@ -1156,6 +1157,20 @@ class Markdown(ScrollView, can_focus=True):
         This calculates the virtual line positions for each block based on
         the current widget width, and updates virtual_size.
         """
+        if self._laying_out:
+            return
+        self._laying_out = True
+        try:
+            self._do_layout_blocks()
+        finally:
+            self._laying_out = False
+
+    def _do_layout_blocks(self) -> None:
+        """Internal implementation of block layout.
+
+        Separated from _layout_blocks to allow the recursion guard
+        while keeping the core logic clean.
+        """
         width = self.scrollable_content_region.width
         if width <= 0:
             width = 80  # Fallback
@@ -1211,6 +1226,13 @@ class Markdown(ScrollView, can_focus=True):
         self._total_lines = current_line + 1  # +1 for bottom spacing
         self.virtual_size = Size(width, self._total_lines)
         self._refresh_scrollbars()
+
+        # After _refresh_scrollbars, the scrollbar visibility may have changed,
+        # which changes the available content width. If so, redo the layout
+        # with the new width so virtual_size is consistent.
+        new_width = self.scrollable_content_region.width
+        if new_width > 0 and new_width != width:
+            self._do_layout_blocks()
 
     def _find_block_at_line(self, line: int) -> tuple[int, _BlockLineInfo] | None:
         """Find which block contains a given virtual line.
